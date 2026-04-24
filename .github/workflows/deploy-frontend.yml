@@ -13,22 +13,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         working-directory: frontend
-        run: bun install
+        run: npm install
 
       - name: Build
         working-directory: frontend
-        run: bun run build
+        run: npm run build
 
       - name: Deploy to Cloudflare Pages
         working-directory: frontend
-        run: bunx wrangler pages deploy dist/public --project-name=todo-focus
+        run: npx wrangler pages deploy dist/public --project-name=todo-focus
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
