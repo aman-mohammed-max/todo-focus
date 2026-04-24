@@ -1,0 +1,21 @@
+name = "todo-focus-backend"
+main = "worker/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "todo-focus"
+database_id = "4c920cc2-f1f9-4ab6-955d-8ed4eda5ccd8"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "eacdba7480d545c181648097a9a65305"
+
+[vars]
+BETTER_AUTH_SECRET = "8e3cf5c8-2e0f-4cbf-8f82-87c5780cb278"
+BETTER_AUTH_URL = "https://todo-focus-backend.aman-mohammed979.workers.dev"
+
+[dev]
+ip = "127.0.0.1"
+port = 8790

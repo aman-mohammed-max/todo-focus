@@ -1,0 +1,8 @@
+node_modules/
+.pnp
+.pnp.js
+.wrangler/
+dist/
+.env
+.env.local
+*.log
