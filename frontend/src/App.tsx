@@ -10,6 +10,7 @@ import { PersonalTasksView } from "@/components/PersonalTasksView";
 import { AuthPage } from "@/pages/AuthPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { NotFound } from "@/pages/not-found";
+import { InstallPWA, PWAUpdateBanner } from "@/components/InstallPWA";
 import { api, Project, Task, PersonalTask as PersonalTaskType, PausePeriod } from "./api-client-react";
 
 const AUTH_KEY = "ff_user_registered";
@@ -313,6 +314,8 @@ function AppContent() {
             )}
           </Route>
           <Route component={NotFound} />
+          <PWAUpdateBanner />
+          <InstallPWA />
         </Switch>
       </main>
     </div>

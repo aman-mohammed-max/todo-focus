@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { createAuth } from './auth';
+import { cors } from 'hono/cors';
 
 type Env = {
   DB: D1Database;
@@ -10,17 +10,12 @@ type Env = {
 
 const app = new Hono<{ Bindings: Env }>();
 
-// CORS middleware
-app.use('*', async (c, next) => {
-  await next();
-  if (c.res) {
-    const origin = c.req.header('Origin') || '*';
-    c.res.headers.set('Access-Control-Allow-Origin', origin);
-    c.res.headers.set('Access-Control-Allow-Credentials', 'true');
-    c.res.headers.set('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-    c.res.headers.set('Access-Control-Allow-Headers', 'Content-Type, Cookie, Authorization, X-API-Key');
-  }
-});
+app.use('*', cors({
+  origin: ['https://todo.amanm.space', 'https://todo-focus-backend.aman-mohammed979.workers.dev'],
+  credentials: true,
+  allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Cookie', 'Authorization', 'X-API-Key'],
+}));
 
 // Debug endpoint (no auth needed)
 app.get('/api/debug', async (c) => {
@@ -201,68 +196,105 @@ app.post('/api/init-schema', async (c) => {
   return c.json({ success: true, tablesCreated: statements.length });
 });
 
-// ============ Better-Auth Handler ============
-// Session endpoint (must be before catch-all) - uses manual session table
-app.get('/api/auth/session', async (c) => {
-  const userId = await authenticate(c as any);
-  if (!userId) {
-    return c.json({ user: null });
-  }
-  
+// ============ Simple Auth (replaces better-auth) ============
+
+// Sign up
+app.post('/api/auth/sign-up/email', async (c) => {
   try {
-    const user = await c.env.DB.prepare('SELECT id, name, email FROM user WHERE id = ?').bind(userId).first<{ id: string; name: string; email: string }>();
-    return c.json({ user });
-  } catch {
-    return c.json({ user: null });
+    const { email, password, name } = await c.req.json();
+    if (!email || !password) return c.json({ error: 'Email and password required' }, 400);
+    
+    const existing = await c.env.DB.prepare('SELECT id FROM user WHERE email = ?').bind(email).first();
+    if (existing) return c.json({ error: 'User already exists' }, 400);
+    
+    const userId = crypto.randomUUID();
+    const passwordHash = await hashKey(password);
+    const now = Date.now();
+    
+    await c.env.DB.prepare(
+      'INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)'
+    ).bind(userId, name || email.split('@')[0], email, now, now).run();
+    
+    // Create session
+    const sessionId = crypto.randomUUID();
+    const expiresAt = now + (30 * 24 * 60 * 60 * 1000);
+    await c.env.DB.prepare(
+      'INSERT INTO session (id, expires_at, token, created_at, updated_at, user_id) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(sessionId, expiresAt, sessionId, now, now, userId).run();
+    
+    return c.json({ 
+      user: { id: userId, name: name || email.split('@')[0], email },
+      session: sessionId
+    }, 201);
+  } catch (e) {
+    return c.json({ error: 'Signup failed' }, 500);
   }
 });
 
-// Catch-all for better-auth routes
-app.all('/api/auth/*', async (c) => {
-  const auth = createAuth(c.env as Env);
-  return auth.handler(c.req.raw);
+// Sign in
+app.post('/api/auth/sign-in/email', async (c) => {
+  try {
+    const { email, password } = await c.req.json();
+    if (!email || !password) return c.json({ error: 'Email and password required' }, 400);
+    
+    const user = await c.env.DB.prepare('SELECT * FROM user WHERE email = ?').bind(email).first<any>();
+    if (!user) return c.json({ error: 'Invalid credentials' }, 401);
+    
+    // Create session
+    const sessionId = crypto.randomUUID();
+    const expiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
+    await c.env.DB.prepare(
+      'INSERT INTO session (id, expires_at, token, created_at, updated_at, user_id) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(sessionId, expiresAt, sessionId, Date.now(), Date.now(), user.id).run();
+    
+    c.header('Set-Cookie', `better-auth-session=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30*24*60*60}`);
+    
+    return c.json({ 
+      user: { id: user.id, name: user.name, email: user.email },
+      session: sessionId
+    });
+  } catch (e) {
+    return c.json({ error: 'Login failed' }, 500);
+  }
+});
+
+// Sign out
+app.post('/api/auth/sign-out', async (c) => {
+  const cookie = c.req.header('Cookie') || '';
+  const match = cookie.match(/better-auth-session=([^;]+)/);
+  if (match) {
+    await c.env.DB.prepare('DELETE FROM session WHERE token = ?').bind(match[1]).run();
+  }
+  return c.json({ success: true });
+});
+
+// Session endpoint
+app.get('/api/auth/session', async (c) => {
+  const userId = await authenticate(c as any);
+  if (!userId) return c.json({ user: null });
+  const user = await c.env.DB.prepare('SELECT id, name, email FROM user WHERE id = ?').bind(userId).first();
+  return c.json({ user: user || null });
 });
 
 // ============ Auth Helper ============
 const authenticate = async (c: { env: Env; req: { header: (name: string) => string | null } }): Promise<string | null> => {
-  // First try better-auth session
-  const auth = createAuth(c.env as Env);
-  try {
-    const session = await auth.api.getSession({ headers: c.req.header() });
-    if (session?.user?.id) return session.user.id;
-  } catch {
-    // Ignore better-auth errors
-  }
-  
   // Try API key
   const apiKey = c.req.header('X-API-Key') || c.req.header('Authorization')?.replace('Bearer ', '');
   if (apiKey) {
-    try {
-      const session = await auth.api.getSession({ headers: { authorization: `Bearer ${apiKey}` } });
-      if (session?.user?.id) return session.user.id;
-    } catch {
-      // Ignore
-    }
+    const keyHash = await hashKey(apiKey);
+    const userId = await c.env.KV.get(`apikey:${keyHash}`);
+    if (userId) return userId;
   }
   
-  // Try manual session from cookie (better-auth uses different cookie names)
+  // Try session from cookie
   const cookieHeader = c.req.header('Cookie') ?? '';
-  // Try multiple possible cookie names
-  const cookieNames = ['better-auth.session_token', 'better-auth-session', 'session'];
-  for (const cookieName of cookieNames) {
-    const match = cookieHeader.match(new RegExp(`${cookieName}=([^;]+)`));
-    if (match) {
-      const token = match[1];
-      try {
-        const now = Date.now();
-        const sessionRow = await c.env.DB.prepare(
-          'SELECT user_id FROM session WHERE token = ? AND expires_at > ?'
-        ).bind(token, now).first<{ user_id: string }>();
-        if (sessionRow?.user_id) return sessionRow.user_id;
-      } catch {
-        // Ignore
-      }
-    }
+  const match = cookieHeader.match(/better-auth-session=([^;]+)/);
+  if (match) {
+    const token = match[1];
+    const sessionRow = await c.env.DB.prepare(
+      'SELECT user_id FROM session WHERE token = ? AND expires_at > ?'
+    ).bind(token, Date.now()).first<{ user_id: string }>();
+    if (sessionRow?.user_id) return sessionRow.user_id;
   }
   
   return null;
