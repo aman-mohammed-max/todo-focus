@@ -1,4 +1,4 @@
-const CACHE_NAME = 'focusflow-v1';
+const CACHE_NAME = 'focusflow-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -36,24 +36,44 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  if (url.origin === API_BASE || request.url.includes('/api/')) {
-    event.respondWith(networkFirst(request));
-  } else if (request.destination === 'document' || request.destination === 'script' || request.destination === 'style' || request.destination === 'image') {
-    event.respondWith(cacheFirst(request));
-  } else {
-    event.respondWith(fetch(request));
+  // Skip unsupported schemes (chrome extensions, devtools)
+  if (url.protocol === 'chrome-extension:' || url.protocol === 'devtools:') {
+    return;
   }
+
+  // API requests: only intercept when targeting the backend origin.
+  // Use network-first strategy, but only cache GET responses.
+  if (url.origin === API_BASE) {
+    event.respondWith(networkFirst(request));
+    return;
+  }
+
+  // Static assets (HTML, scripts, styles, images, fonts) – cache-first.
+  if (
+    request.destination === 'document' ||
+    request.destination === 'script' ||
+    request.destination === 'style' ||
+    request.destination === 'image' ||
+    request.destination === 'font'
+  ) {
+    event.respondWith(cacheFirst(request));
+    return;
+  }
+
+  // Fallback: network fetch.
+  event.respondWith(fetch(request));
 });
 
 async function cacheFirst(request) {
   const cached = await caches.match(request);
   if (cached) return cached;
-  
+
   try {
     const response = await fetch(request);
-    if (response.ok) {
+    // Cache only successful GET responses.
+    if (response.ok && request.method === 'GET') {
       const cache = await caches.open(CACHE_NAME);
-      cache.put(request, response.clone());
+      await cache.put(request, response.clone());
     }
     return response;
   } catch {
@@ -64,9 +84,10 @@ async function cacheFirst(request) {
 async function networkFirst(request) {
   try {
     const response = await fetch(request);
-    if (response.ok) {
+    // Cache only successful GET responses.
+    if (response.ok && request.method === 'GET') {
       const cache = await caches.open(CACHE_NAME);
-      cache.put(request, response.clone());
+      await cache.put(request, response.clone());
     }
     return response;
   } catch {
@@ -74,7 +95,7 @@ async function networkFirst(request) {
     if (cached) return cached;
     return new Response(JSON.stringify({ error: 'Offline' }), {
       status: 503,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json' },
     });
   }
 }
